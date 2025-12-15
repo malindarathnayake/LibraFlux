@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Docs/logo.svg" alt="LibraFlux Logo" width="600">
+  <img src="_logo/logo.svg" alt="LibraFlux Logo" width="600">
 </p>
 
 <p align="center">
