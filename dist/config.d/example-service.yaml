@@ -1,0 +1,25 @@
+# Example service definition
+# Copy to /etc/lbctl/config.d and customize.
+
+services:
+  - name: example-service
+    protocol: tcp
+    ports: [80, 443]
+    port_ranges: []
+    scheduler: wrr
+    backends:
+      - address: 10.0.0.10
+        port: 0
+        weight: 1
+      - address: 10.0.0.11
+        port: 0
+        weight: 1
+    health:
+      enabled: true
+      type: tcp
+      port: 80
+      interval_ms: 5000
+      timeout_ms: 1000
+      fail_after: 2
+      recover_after: 1
+

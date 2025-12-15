@@ -1,0 +1,63 @@
+# lbctl configuration
+# Services are defined in /etc/lbctl/config.d/*.yaml
+
+mode: dr # dr or nat
+
+node:
+  name: lb-node-a # Change per node
+  role: primary   # primary or secondary
+
+network:
+  frontend:
+    interface: ens160 # Change to your frontend interface
+    vip: 192.168.94.250
+    cidr: 24
+  backend:
+    interface: ens192 # Change to your backend interface
+
+vrrp:
+  vrid: 50
+  priority_primary: 150
+  priority_secondary: 100
+  advert_interval_ms: 1000
+
+include: /etc/lbctl/config.d/*.yaml
+
+observability:
+  logging:
+    console:
+      enabled: true
+      level: info
+    gelf:
+      enabled: false
+      # host: ${GELF_HOST}
+      # port: ${GELF_PORT}
+      # protocol: udp
+      # facility: lbctl
+  metrics:
+    influxdb:
+      enabled: false
+      # url: ${INFLUX_URL}
+      # token: ${INFLUX_TOKEN}
+      # org: ${INFLUX_ORG}
+      # bucket: ${INFLUX_BUCKET}
+      # push_interval_seconds: 30
+    prometheus:
+      enabled: true
+      port: 9090
+      path: /metrics
+      # bind: 127.0.0.1  # Uncomment to restrict to localhost only
+
+system:
+  state_dir: /var/lib/lbctl
+  frr_config: /etc/frr/frr.conf
+  sysctl_file: /etc/sysctl.d/99-lbctl.conf
+  tuning_profile: balanced
+  lock_idle_timeout_minutes: 10
+
+daemon:
+  reconcile_interval_ms: 1000
+  state_cache:
+    enabled: true
+    ttl_ms: 500  # Half the reconcile interval
+

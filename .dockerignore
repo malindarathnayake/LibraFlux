@@ -1,0 +1,14 @@
+.git
+.gitignore
+**/*.log
+**/*.tmp
+**/*.swp
+**/*.swo
+**/.DS_Store
+**/node_modules
+dist
+bin
+out
+tmp
+vendor
+
