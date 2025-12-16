@@ -12,24 +12,17 @@ Before adding new features, we're prioritizing production safety mechanisms. Why
 
 ## Phase 03B: Safety Guardrails (In Progress)
 
-### Document Connection Behavior
-
-**The Problem:** What happens to active connections when you remove a backend or change its weight?
-
-Right now, IPVS drops connections immediately when you remove a backend. This can surprise operators during maintenance windows.
-
-**What we're doing:**
-- Document the current behavior clearly in the spec
-- Provide workarounds (set `weight: 0`, wait for drain, then remove)
-- Plan future connection draining feature
-
-**Why this matters:** L4 load balancers often fail during config changes, not steady-state operation.
-
----
-
-### Dry-Run Mode
+### 1. Dry-Run Mode (First)
 
 **The Problem:** You want to see what changes will happen before applying them.
+
+**Why this comes first:** Building `Plan()` forces us to define canonical service identity, which cascades into snapshots, rate-limits, and draining logic. Get this right first.
+
+**Current service identity in reconciler:**
+```
+Service Key:     {protocol}:{address}:{port}     e.g., tcp:192.168.94.250:443
+Destination Key: {address}:{port}                e.g., 192.168.94.22:443
+```
 
 **What we're adding:**
 
@@ -46,9 +39,49 @@ Think of it like `kubectl diff` or `terraform plan`.
 
 ---
 
-### Snapshot & Rollback
+### 2. Change Rate Limiting + Pre-Flight Checks (Second)
+
+**Why these come second:** Once `Plan()` exists, these are cheap to implement and prevent the worst footguns early.
+
+**Change rate limiting:**
+- Max 100 services created per apply
+- Max 50 backends per service
+- Max 10 services deleted per apply
+- Override with `--force` if you really mean it
+
+**Pre-flight checks:**
+- Is the VIP actually present on this node?
+- Are IPVS kernel modules loaded?
+- Will this exceed kernel connection table limits?
+- Any duplicate services?
+
+---
+
+### 3. Document Connection Behavior (Sysctl-Conditional)
+
+**The Problem:** What happens to active connections when you remove a backend or change its weight?
+
+**Important caveat:** IPVS behavior depends heavily on sysctl settings. We cannot make blanket statements like "connections are dropped immediately" without specifying the conditions.
+
+**Investigate:**
+- `net.ipv4.vs.expire_nodest_conn` - What happens when destination is removed
+- `net.ipv4.vs.expire_quiescent_template` - What happens when destination goes to weight=0
+- `net.ipv4.vs.conn_reuse_mode` - Connection reuse behavior
+
+**What we're documenting:**
+- Observed behavior under specific sysctl settings + forwarding modes (DR vs NAT)
+- Reproducible tests to validate documented behavior
+- Clear "tested under these conditions" statements
+
+**Why this matters:** Users will reference this doc during maintenance windows. Incorrect guarantees cause either unnecessary outages ("we thought it would drop") or surprise outages ("we thought it wouldn't").
+
+---
+
+### 4. Snapshot & Rollback (After Identity is Defined)
 
 **The Problem:** You apply a config change and something breaks. How do you quickly roll back?
+
+**Why this comes after dry-run:** Snapshot serialization benefits from having canonical service identity defined. Non-deterministic ordering in JSON will cause spurious diffs.
 
 **What we're adding:**
 
@@ -67,34 +100,20 @@ Snapshots are stored in `/var/lib/lbctl/snapshots/` as JSON files containing you
 
 ---
 
-### Change Rate Limiting
+### 5. Connection Draining (Future - Watch the UDP Trap)
 
-**The Problem:** A typo in your config could accidentally delete 100 services at once.
+**The Problem:** Gracefully drain connections before removing a backend.
 
-**What we're adding:**
+**TCP approach:** Poll `ActiveConns` until zero or timeout. This is a known pattern in IPVS-based systems.
 
-Safety limits with sane defaults:
-- Max 100 services created per apply
-- Max 50 backends per service
-- Max 10 services deleted per apply
+**UDP caveat:** Connection draining by polling `ActiveConns` breaks down for UDP because "active connections" are often 0 even while traffic is flowing. This has bitten kube-proxy/IPVS implementations in real deployments.
 
-You can override with `--force` if you really mean it, but the default is to prevent accidents.
+**What we'll do for UDP:**
+- Time-based grace period (not connection-based)
+- Document IPVS UDP timeout behavior (`net.ipv4.vs.timeout_udp`)
+- Explicitly branch draining logic by protocol
 
----
-
-### Pre-Flight Checks
-
-**The Problem:** Config looks valid, but will it actually work on this system?
-
-**What we're adding:**
-
-Before applying config, check:
-- Is the VIP actually present on this node?
-- Are IPVS kernel modules loaded?
-- Will this exceed kernel connection table limits?
-- Any duplicate services?
-
-Fail fast with clear error messages instead of partially applying broken config.
+This is future work, not immediate priority.
 
 ---
 
@@ -161,26 +180,13 @@ New Prometheus metrics:
 
 **What we're considering:**
 
-Built-in mTLS tunnel for config replication:
-- Primary node pushes config changes to Secondary
-- Mutual TLS authentication
-- Atomic file writes (no partial updates)
-- Primary always wins (no merge conflicts)
-
-**Design challenges we're addressing:**
-- Certificate rotation (what happens when certs expire?)
-- Conflict resolution (what if someone edits Secondary directly?)
-- Replay protection (prevent rollback attacks)
-- Reconnect storms (network partition heals)
-
-**Current thinking:** Content-addressed bundles instead of JSON-RPC:
+Content-addressed bundles (simpler than mTLS, deferred to later phase):
 - Tar up `config.d/*` → `bundle-<sha256>.tar.gz`
 - Send hash to Secondary
 - Secondary downloads if not already present
 - Atomic extraction and validation
 - SIGHUP daemon
 
-This approach is simpler and more robust than streaming file-by-file updates.
 
 ---
 
@@ -225,20 +231,21 @@ This is a major undertaking and requires significant design work. Not planned fo
 
 Here's what we're building, in order:
 
-| Feature | Priority | Why |
-|---------|----------|-----|
-| **Connection state docs** | **Critical** | Quick win, high operator value |
-| **Dry-run diff** | **Critical** | Prevent production incidents |
-| **Snapshot/rollback** | **Critical** | Fast recovery from mistakes |
-| **Change rate limiting** | **High** | Prevent accidental mass deletion |
-| **Pre-flight checks** | **High** | Fail fast with clear errors |
-| UDP health checks (DNS) | High | Most requested feature |
-| Enhanced IPVS metrics | Medium | Operational visibility |
-| Config replication | Medium | Enterprise HA feature |
-| Nginx converter | Low | Migration convenience |
-| Kubernetes integration | Low | Major project, future |
+| Order | Feature | Priority | Why |
+|-------|---------|----------|-----|
+| 1 | **Dry-run diff** | **Critical** | Defines service identity, enables everything else |
+| 2 | **Change rate limiting** | **Critical** | Cheap once Plan() exists, prevents worst footguns |
+| 3 | **Pre-flight checks** | **Critical** | Cheap once Plan() exists, fail fast |
+| 4 | **Connection behavior docs** | **Critical** | Must document sysctl-conditional behavior |
+| 5 | **Snapshot/rollback** | **High** | Benefits from identity work being complete |
+| 6 | UDP health checks (DNS) | High | Most requested feature |
+| 7 | Enhanced IPVS metrics | Medium | Operational visibility |
+| 8 | Config replication | Medium | Enterprise HA feature |
+| 9 | Nginx converter | Low | Migration convenience |
+| 10 | Connection draining | Low | TCP straightforward, UDP needs careful design |
+| - | Kubernetes integration | Future | Major project |
 
-**Key principle:** Safety before features. We won't add new capabilities until we have proper guardrails in place.
+**Key principle:** Safety before features. Dry-run comes first because it forces us to define canonical service identity, which everything else depends on.
 
 ---
 
@@ -264,7 +271,7 @@ We welcome feature requests and design feedback! When opening an issue, please i
 When proposing features, consider:
 - **Blast radius:** How much damage can a bug cause?
 - **Operational burden:** What new failure modes does this introduce?
-- **Footguns:** Can operators misconfigure this in dangerous ways?
+- **Footguns:** Can users misconfigure this in dangerous ways?
 
 We prioritize features that are:
 1. Safe by default
@@ -287,7 +294,6 @@ We prioritize features that are:
 - [Phase 01 Spec](spec.md) - Current implementation details
 - [Engineering Standards](engineering-standards.md) - Code quality guidelines
 - [Progress Tracker](PROGRESS.md) - What's been completed
-- [Kubernetes Loop Article](kubernetes-loop-in-libraflux.md) - Design philosophy
 
 ---
 
