@@ -1,619 +1,294 @@
 # LibraFlux Roadmap
 
-## Overview
-
-This document outlines planned features and enhancements for LibraFlux (lbctl) beyond Phase 01. Each feature includes technical rationale, implementation strategy, and integration points with the existing architecture.
+This document outlines what's coming next for LibraFlux. If you're interested in contributing or have feedback on priorities, please open an issue!
 
 ---
 
-## Phase 02: Advanced Health Checks & Observability
+## Current Focus: Production Safety First
 
-### 1. UDP Health Checks (Echo/Ack Protocol)
-
-**Status:** Planned  
-**Priority:** High  
-**Complexity:** Medium
-
-#### Problem Statement
-
-TCP health checks (simple connect/disconnect) don't work for UDP services because UDP is connectionless. Current Phase 01 implementation only supports TCP probes, which means UDP services like DNS, SIP, or game servers cannot be accurately health-checked.
-
-#### Solution: UDP Echo Protocol
-
-Implement a UDP health check that sends a unique payload (nonce) and expects it back within a timeout window.
-
-**Protocol Design:**
-
-```
-Client (lbctl)                    Backend Server
-      |                                 |
-      |------- UDP Packet ------------->|
-      |  Payload: nonce + timestamp     |
-      |                                 |
-      |<------ UDP Response ------------|
-      |  Payload: same nonce            |
-      |                                 |
-   Validate nonce match + latency
-```
-
-**Implementation Strategy:**
-
-1. **Backend Requirements:**
-   - Backend must run an echo service (e.g., `socat -u UDP4-LISTEN:8080,fork EXEC:/bin/cat`)
-   - OR implement application-specific checks (DNS query, SIP OPTIONS)
-
-2. **Config Schema Extension:**
-
-```yaml
-services:
-  - name: switchboard-udp
-    protocol: udp
-    ports: [7543-7814]
-    backends:
-      - address: 192.168.94.22
-        port: 0
-        weight: 1
-    health:
-      enabled: true
-      type: udp_echo          # NEW: udp_echo, udp_dns, udp_sip
-      port: 8080
-      interval_ms: 1000
-      timeout_ms: 300
-      fail_after: 3
-      recover_after: 2
-      payload: "PING"         # Optional custom payload
-      expect: "PING"          # Expected response (default: same as payload)
-```
-
-3. **Code Changes:**
-
-| File | Changes |
-|------|---------|
-| `internal/health/checker.go` | Add `UDPEchoCheck()` function with nonce generation |
-| `internal/health/scheduler.go` | Support `udp_echo` check type in runner |
-| `internal/config/types.go` | Add `Payload` and `Expect` fields to `HealthConfig` |
-| `internal/config/validator.go` | Validate UDP check types require UDP protocol services |
-
-4. **Nonce Generation:**
-
-```go
-func generateNonce() string {
-    return fmt.Sprintf("lbctl-%d-%s", time.Now().UnixNano(), randomHex(8))
-}
-
-func udpEchoCheck(address string, port int, timeout time.Duration, payload string) error {
-    nonce := generateNonce()
-    fullPayload := fmt.Sprintf("%s:%s", payload, nonce)
-    
-    conn, err := net.DialTimeout("udp", fmt.Sprintf("%s:%d", address, port), timeout)
-    if err != nil {
-        return err
-    }
-    defer conn.Close()
-    
-    conn.SetDeadline(time.Now().Add(timeout))
-    
-    // Send
-    _, err = conn.Write([]byte(fullPayload))
-    if err != nil {
-        return err
-    }
-    
-    // Receive
-    buf := make([]byte, 1024)
-    n, err := conn.Read(buf)
-    if err != nil {
-        return err
-    }
-    
-    response := string(buf[:n])
-    if response != fullPayload {
-        return fmt.Errorf("nonce mismatch: sent %s, got %s", fullPayload, response)
-    }
-    
-    return nil
-}
-```
-
-5. **Application-Specific Checks (Future):**
-   - `udp_dns`: Send DNS query, validate response
-   - `udp_sip`: Send SIP OPTIONS, expect 200 OK
-   - `udp_ntp`: Send NTP query, validate response
-
-**Testing Strategy:**
-
-- Unit test: Mock UDP server echoing payloads
-- Integration test: Real `socat` echo server
-- E2E test: Health state transitions with UDP backend failures
-
-**Documentation:**
-
-- Update `Docs/spec.md` § Health Check section
-- Add `Docs/udp-health-checks.md` with backend setup examples
-- Update `dist/config.d/example-service.yaml` with UDP examples
+Before adding new features, we're prioritizing production safety mechanisms. Why? Because kernel-level load balancing is powerful but unforgiving—a bug can drop all your traffic.
 
 ---
 
-### 2. Enhanced IPVS Metrics (Traffic Counters)
+## Phase 03B: Safety Guardrails (In Progress)
 
-**Status:** Planned  
-**Priority:** Medium  
-**Complexity:** Low
+### Document Connection Behavior
 
-#### Problem Statement
+**The Problem:** What happens to active connections when you remove a backend or change its weight?
 
-Current metrics focus on health and reconciliation but don't expose actual traffic statistics from IPVS. Operators need to see:
-- Connection counts per backend
-- Packet/byte counters
-- Active vs inactive connections
+Right now, IPVS drops connections immediately when you remove a backend. This can surprise operators during maintenance windows.
 
-#### Solution: IPVS Stats via Netlink
+**What we're doing:**
+- Document the current behavior clearly in the spec
+- Provide workarounds (set `weight: 0`, wait for drain, then remove)
+- Plan future connection draining feature
 
-IPVS exposes per-destination statistics via netlink. We already use `vishvananda/netlink` for IPVS management, so we can query these stats.
+**Why this matters:** L4 load balancers often fail during config changes, not steady-state operation.
 
-**New Metrics:**
+---
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `lbctl_ipvs_connections_total` | counter | node, service, backend | Total connections handled |
-| `lbctl_ipvs_connections_active` | gauge | node, service, backend | Currently active connections |
-| `lbctl_ipvs_packets_in_total` | counter | node, service, backend | Inbound packets |
-| `lbctl_ipvs_packets_out_total` | counter | node, service, backend | Outbound packets |
-| `lbctl_ipvs_bytes_in_total` | counter | node, service, backend | Inbound bytes |
-| `lbctl_ipvs_bytes_out_total` | counter | node, service, backend | Outbound bytes |
-| `lbctl_health_check_latency_seconds` | histogram | node, service, backend | Health check RTT |
+### Dry-Run Mode
 
-**Implementation Strategy:**
+**The Problem:** You want to see what changes will happen before applying them.
 
-1. **Code Changes:**
+**What we're adding:**
 
-| File | Changes |
-|------|---------|
-| `internal/ipvs/manager.go` | Add `GetDestinationStats(svc, dest) (*Stats, error)` |
-| `internal/observability/metrics.go` | Add IPVS stats metrics |
-| `internal/daemon/engine.go` | Collect stats in reconcile loop (every N cycles) |
-
-2. **Netlink Stats Query:**
-
-```go
-// internal/ipvs/manager.go
-type DestinationStats struct {
-    Connections      uint64
-    ActiveConns      uint32
-    InactiveConns    uint32
-    PacketsIn        uint64
-    PacketsOut       uint64
-    BytesIn          uint64
-    BytesOut         uint64
-}
-
-func (m *manager) GetDestinationStats(svc *Service, dest *Destination) (*DestinationStats, error) {
-    // Use netlink to query IPVS stats
-    ipvsSvc := &netlink.Service{
-        Address:  net.ParseIP(svc.VirtualIP),
-        Port:     svc.VirtualPort,
-        Protocol: protocolToNetlink(svc.Protocol),
-    }
-    
-    ipvsDest := &netlink.Destination{
-        Address: net.ParseIP(dest.Address),
-        Port:    dest.Port,
-    }
-    
-    stats, err := netlink.GetDestination(ipvsSvc, ipvsDest)
-    if err != nil {
-        return nil, err
-    }
-    
-    return &DestinationStats{
-        Connections:   stats.Stats.Connections,
-        ActiveConns:   stats.ActiveConnections,
-        InactiveConns: stats.InactiveConnections,
-        PacketsIn:     stats.Stats.PacketsIn,
-        PacketsOut:    stats.Stats.PacketsOut,
-        BytesIn:       stats.Stats.BytesIn,
-        BytesOut:      stats.Stats.BytesOut,
-    }, nil
-}
+```bash
+lbctl apply --config /etc/lbctl/config.yaml --dry-run
 ```
 
-3. **Collection Strategy:**
+This will show you:
+- Services to be created (with backends)
+- Services to be updated (what's changing)
+- Services to be deleted
 
-- Collect stats every N reconcile cycles (configurable, default: 5 cycles)
-- Avoid collecting on every cycle to reduce netlink overhead
-- Add config option: `daemon.stats_collection_interval_cycles: 5`
+Think of it like `kubectl diff` or `terraform plan`.
 
-4. **Prometheus Histogram for Latency:**
+---
 
-```go
-// internal/observability/metrics.go
-healthCheckLatency := prometheus.NewHistogramVec(
-    prometheus.HistogramOpts{
-        Name:    "lbctl_health_check_latency_seconds",
-        Help:    "Health check round-trip time",
-        Buckets: []float64{.001, .005, .010, .025, .050, .100, .250, .500, 1.0},
-    },
-    []string{"node", "service", "backend"},
-)
+### Snapshot & Rollback
+
+**The Problem:** You apply a config change and something breaks. How do you quickly roll back?
+
+**What we're adding:**
+
+```bash
+# Before making changes
+lbctl snapshot create --name before-upgrade
+
+# Apply your changes
+lbctl apply --config /etc/lbctl/config.yaml
+
+# Oops, something broke - roll back
+lbctl snapshot restore --name before-upgrade
 ```
 
-**Testing Strategy:**
+Snapshots are stored in `/var/lib/lbctl/snapshots/` as JSON files containing your IPVS state.
 
-- Unit test: Mock netlink stats responses
-- Integration test: Real IPVS with traffic generation
-- Verify metrics appear in Prometheus scrape
+---
 
-**Documentation:**
+### Change Rate Limiting
 
-- Update `Docs/spec.md` § Metrics section
-- Add example Grafana dashboard JSON
+**The Problem:** A typo in your config could accidentally delete 100 services at once.
+
+**What we're adding:**
+
+Safety limits with sane defaults:
+- Max 100 services created per apply
+- Max 50 backends per service
+- Max 10 services deleted per apply
+
+You can override with `--force` if you really mean it, but the default is to prevent accidents.
+
+---
+
+### Pre-Flight Checks
+
+**The Problem:** Config looks valid, but will it actually work on this system?
+
+**What we're adding:**
+
+Before applying config, check:
+- Is the VIP actually present on this node?
+- Are IPVS kernel modules loaded?
+- Will this exceed kernel connection table limits?
+- Any duplicate services?
+
+Fail fast with clear error messages instead of partially applying broken config.
+
+---
+
+## Phase 02: Advanced Features
+
+### UDP Health Checks (Real Protocol Validation)
+
+**The Problem:** TCP health checks don't work for UDP services like DNS or SIP.
+
+**What we're NOT doing:** Generic UDP echo checks. They require deploying separate echo listeners on every backend (security risk + operational burden).
+
+**What we ARE doing:** Real protocol checks that validate your actual service.
+
+**Priority order:**
+
+1. **DNS checks** (most requested)
+   ```yaml
+   health:
+     type: udp_dns
+     dns_query: "health.example.com"
+     expect_rcode: NOERROR
+   ```
+
+2. **SIP checks** (VoIP/telephony)
+   ```yaml
+   health:
+     type: udp_sip
+     sip_uri: "sip:health@192.168.1.10:5060"
+   ```
+
+3. **NTP checks** (time services)
+
+4. **Generic echo** (last resort, with big warnings)
+
+**Why DNS first?** It's the most common UDP service, and you can validate it without deploying extra infrastructure.
+
+---
+
+### Enhanced IPVS Metrics
+
+**The Problem:** Current metrics show health and reconciliation, but not actual traffic stats.
+
+**What we're adding:**
+
+New Prometheus metrics:
+- `lbctl_ipvs_connections_total` - Total connections per backend
+- `lbctl_ipvs_connections_active` - Currently active connections
+- `lbctl_ipvs_packets_in_total` / `lbctl_ipvs_packets_out_total`
+- `lbctl_ipvs_bytes_in_total` / `lbctl_ipvs_bytes_out_total`
+- `lbctl_health_check_latency_seconds` - Health check RTT histogram
+
+**Cardinality warning:** These metrics are labeled by `node × service × backend`. If you have 10 services with 20 backends each, that's 200 metric series per metric type. We're adding:
+- Configurable collection interval (default: 30s, separate from reconcile loop)
+- In-memory caching between Prometheus scrapes
+- Cardinality limits to prevent overload
 
 ---
 
 ## Phase 03: Enterprise Features
 
-### 3. Automatic TLS Tunnel for Config Replication
+### Automatic Config Replication (Primary → Secondary)
 
-**Status:** Planned  
-**Priority:** Medium  
-**Complexity:** High
+**The Problem:** In HA pairs, you need to keep configs in sync. Current options are manual `rsync` or external tools like Ansible.
 
-#### Problem Statement
+**What we're considering:**
 
-In HA pairs, config changes must be replicated from Primary to Secondary. Current options:
-- Manual `rsync` over SSH (requires external tooling)
-- Shared NFS mount (single point of failure)
-- Ansible/Puppet (heavyweight for simple pairs)
+Built-in mTLS tunnel for config replication:
+- Primary node pushes config changes to Secondary
+- Mutual TLS authentication
+- Atomic file writes (no partial updates)
+- Primary always wins (no merge conflicts)
 
-#### Solution: Built-in Control Plane with mTLS
+**Design challenges we're addressing:**
+- Certificate rotation (what happens when certs expire?)
+- Conflict resolution (what if someone edits Secondary directly?)
+- Replay protection (prevent rollback attacks)
+- Reconnect storms (network partition heals)
 
-Implement a "Control Plane" mode where the Primary node opens a mutual-TLS listener. The Secondary connects, authenticates, and receives config updates in real-time.
+**Current thinking:** Content-addressed bundles instead of JSON-RPC:
+- Tar up `config.d/*` → `bundle-<sha256>.tar.gz`
+- Send hash to Secondary
+- Secondary downloads if not already present
+- Atomic extraction and validation
+- SIGHUP daemon
 
-**Architecture:**
-
-```mermaid
-flowchart LR
-    subgraph Primary
-        P[lbctl daemon] -->|writes| C1[/etc/lbctl/config.d/]
-        P -->|notifies| CP[Control Plane Server]
-    end
-    
-    subgraph Secondary
-        CC[Control Plane Client] -->|mTLS connection| CP
-        CC -->|writes| C2[/etc/lbctl/config.d/]
-        CC -->|SIGHUP| S[lbctl daemon]
-    end
-    
-    CP -->|push config| CC
-```
-
-**Config Schema Extension:**
-
-```yaml
-# /etc/lbctl/config.yaml (Primary)
-control_plane:
-  enabled: true
-  mode: primary
-  listen_address: "0.0.0.0:8443"
-  tls:
-    cert: "/etc/lbctl/certs/server.crt"
-    key: "/etc/lbctl/certs/server.key"
-    ca: "/etc/lbctl/certs/ca.crt"  # For client cert validation
-
-# /etc/lbctl/config.yaml (Secondary)
-control_plane:
-  enabled: true
-  mode: secondary
-  primary_address: "192.168.94.10:8443"
-  tls:
-    cert: "/etc/lbctl/certs/client.crt"
-    key: "/etc/lbctl/certs/client.key"
-    ca: "/etc/lbctl/certs/ca.crt"  # For server cert validation
-  sync_interval_seconds: 30
-```
-
-**Implementation Strategy:**
-
-1. **Certificate Generation Helper:**
-
-```bash
-lbctl setup certs --output-dir /etc/lbctl/certs
-# Generates:
-#   ca.crt, ca.key
-#   server.crt, server.key (CN=primary)
-#   client.crt, client.key (CN=secondary)
-```
-
-2. **Code Structure:**
-
-| File | Purpose |
-|------|---------|
-| `internal/controlplane/server.go` | mTLS listener, config watcher, push logic |
-| `internal/controlplane/client.go` | mTLS connector, config receiver, file writer |
-| `internal/controlplane/protocol.go` | Wire protocol (JSON-RPC or gRPC) |
-| `internal/controlplane/certs.go` | Certificate generation and validation |
-
-3. **Protocol Design (JSON-RPC over TLS):**
-
-```json
-// Server -> Client: Config Update
-{
-  "jsonrpc": "2.0",
-  "method": "config.update",
-  "params": {
-    "files": [
-      {
-        "path": "config.d/service1.yaml",
-        "content": "base64-encoded-yaml",
-        "checksum": "sha256-hash"
-      }
-    ],
-    "deleted": ["config.d/old-service.yaml"]
-  },
-  "id": 1
-}
-
-// Client -> Server: Ack
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "status": "applied",
-    "reload_triggered": true
-  },
-  "id": 1
-}
-```
-
-4. **Security Considerations:**
-
-- **Mutual TLS:** Both server and client verify certificates
-- **Certificate Pinning:** Optional CA pinning for extra security
-- **Audit Logging:** All config pushes logged with source identity
-- **Rate Limiting:** Prevent config spam attacks
-
-5. **Fallback Behavior:**
-
-- If control plane connection fails, Secondary continues with last known config
-- Metric: `lbctl_controlplane_connected` (0/1)
-- Alert on prolonged disconnection
-
-**Testing Strategy:**
-
-- Unit test: Mock TLS connections
-- Integration test: Two lbctl instances with real certs
-- E2E test: Config change on Primary, verify Secondary receives it
-
-**Documentation:**
-
-- Add `Docs/control-plane.md` with setup guide
-- Update `Docs/spec.md` § HA Configuration Sync
-- Add example systemd units for both modes
-
-**Alternative Considered:**
-
-- **etcd/Consul:** Heavyweight for simple pairs, adds external dependency
-- **rsync over SSH:** Requires SSH key management, no real-time push
-- **Shared NFS:** Single point of failure, stale reads
+This approach is simpler and more robust than streaming file-by-file updates.
 
 ---
 
-### 4. Nginx → LibraFlux Config Converter
+### Nginx → LibraFlux Config Converter
 
-**Status:** Planned  
-**Priority:** Low  
-**Complexity:** Medium
+**The Problem:** Migrating from Nginx `stream` blocks is tedious and error-prone.
 
-#### Problem Statement
-
-Users migrating from Nginx `stream` blocks to LibraFlux must manually translate configs. This is error-prone and time-consuming.
-
-#### Solution: CLI Converter Tool
-
-Implement `lbctl convert nginx --input nginx.conf --output /etc/lbctl/config.d/` to parse Nginx `stream` and `upstream` blocks and generate equivalent LibraFlux YAML.
-
-**Scope:**
-
-| Nginx Feature | LibraFlux Equivalent | Supported |
-|---------------|----------------------|-----------|
-| `upstream` block | `backends` list | ✅ Yes |
-| `server` block (L4) | `services` entry | ✅ Yes |
-| `listen` directive | `ports` or `port_ranges` | ✅ Yes |
-| `proxy_pass` | Implicit (backend mapping) | ✅ Yes |
-| `health_check` (Nginx Plus) | `health` config | ✅ Yes |
-| `least_conn` | `scheduler: lc` | ✅ Yes |
-| `ip_hash` | `scheduler: sh` | ✅ Yes |
-| `weight` parameter | `weight` field | ✅ Yes |
-| `max_fails` / `fail_timeout` | `fail_after` / `interval_ms` | ✅ Yes (approximate) |
-| SSL termination | N/A (L7 feature) | ❌ No (warn user) |
-| HTTP routing | N/A (L7 feature) | ❌ No (warn user) |
-
-**Example Conversion:**
-
-**Input (nginx.conf):**
-
-```nginx
-stream {
-    upstream postgres_cluster {
-        least_conn;
-        server 192.168.1.101:5432 weight=100 max_fails=3 fail_timeout=10s;
-        server 192.168.1.102:5432 weight=100 max_fails=3 fail_timeout=10s;
-    }
-    
-    server {
-        listen 5432;
-        proxy_pass postgres_cluster;
-    }
-}
-```
-
-**Output (config.d/postgres-cluster.yaml):**
-
-```yaml
-# Generated by lbctl convert nginx
-# Source: nginx.conf (stream block)
-# Date: 2025-12-15T10:30:00Z
-
-services:
-  - name: postgres-cluster
-    protocol: tcp
-    ports: [5432]
-    port_ranges: []
-    scheduler: lc  # Converted from least_conn
-    backends:
-      - address: 192.168.1.101
-        port: 5432
-        weight: 100
-      - address: 192.168.1.102
-        port: 5432
-        weight: 100
-    health:
-      enabled: true
-      type: tcp
-      port: 5432
-      interval_ms: 10000  # Converted from fail_timeout
-      timeout_ms: 3000
-      fail_after: 3       # Converted from max_fails
-      recover_after: 2
-```
-
-**Implementation Strategy:**
-
-1. **Parser:**
-
-```go
-// internal/convert/nginx.go
-type NginxParser struct {
-    config *NginxConfig
-}
-
-func (p *NginxParser) Parse(path string) error {
-    // Use github.com/tufanbarisyildirim/gonginx for parsing
-    // Or implement simple regex-based parser for stream blocks
-}
-
-func (p *NginxParser) ToLibraFlux() ([]*config.Service, error) {
-    // Convert upstream + server blocks to Service structs
-}
-```
-
-2. **CLI Command:**
+**What we're adding:**
 
 ```bash
-lbctl convert nginx \
-  --input /etc/nginx/nginx.conf \
-  --output /etc/lbctl/config.d/ \
-  --dry-run  # Preview without writing
+lbctl convert nginx --input /etc/nginx/nginx.conf --output /etc/lbctl/config.d/
 ```
 
-3. **Warnings for Unsupported Features:**
+**What it converts:**
+- `upstream` blocks → `backends`
+- `server` blocks → `services`
+- `least_conn` → `scheduler: lc`
+- `ip_hash` → `scheduler: sh`
+- `weight` / `max_fails` / `fail_timeout` → equivalent LibraFlux config
 
-```
-⚠ WARNING: SSL termination detected in server block (line 45)
-  LibraFlux operates at L4 and cannot terminate SSL.
-  Consider using Nginx as L7 frontend with LibraFlux as L4 backend.
+**What it can't convert:**
+- SSL termination (L7 feature)
+- HTTP routing (L7 feature)
+- Nginx Plus dynamic upstreams
+- Lua scripts
 
-⚠ WARNING: HTTP routing detected (location blocks)
-  LibraFlux cannot convert L7 HTTP rules to L4 IPVS.
-  These directives will be ignored.
-```
-
-4. **Code Structure:**
-
-| File | Purpose |
-|------|---------|
-| `internal/convert/nginx.go` | Nginx config parser |
-| `internal/convert/mapper.go` | Nginx → LibraFlux mapping logic |
-| `cmd/lbctl/convert.go` | CLI command implementation |
-
-**Testing Strategy:**
-
-- Unit test: Parse sample Nginx configs
-- Integration test: Convert real-world Nginx configs
-- Validation test: Generated YAML passes `lbctl validate`
-
-**Documentation:**
-
-- Add `Docs/migration-from-nginx.md`
-- Include common pitfalls and limitations
-- Provide side-by-side comparison examples
-
-**Limitations:**
-
-- Cannot convert L7 features (SSL, HTTP routing)
-- Nginx Plus features (dynamic upstreams) not supported
-- Complex Nginx Lua scripts ignored
+The tool will warn you about unsupported features and suggest alternatives.
 
 ---
 
-## Phase 04: Kubernetes Integration
+## Phase 04+: Future Ideas
 
-### 5. Kubernetes Service Controller
+### Kubernetes Integration
 
-**Status:** Future  
-**Priority:** Low  
-**Complexity:** Very High
+Run LibraFlux as an external load balancer for Kubernetes `type: LoadBalancer` services (alternative to MetalLB or cloud providers).
 
-#### Problem Statement
-
-Users running Kubernetes may want to use LibraFlux as an external L4 load balancer for `type: LoadBalancer` services instead of MetalLB or cloud providers.
-
-#### Solution: Kubernetes Controller
-
-Implement a Kubernetes controller that watches `Service` resources and programs LibraFlux accordingly.
-
-**Architecture:**
-
-```
-Kubernetes API
-     |
-     v
-lbctl-controller (watches Services)
-     |
-     v
-lbctl API (gRPC or REST)
-     |
-     v
-IPVS (kernel)
-```
-
-**Implementation Notes:**
-
-- Use `client-go` for Kubernetes API interaction
-- Watch `Service` resources with `type: LoadBalancer`
-- Allocate VIPs from a configured pool
-- Update Service `.status.loadBalancer.ingress`
-- Handle Service deletion (cleanup IPVS rules)
-
-**Out of Scope for Phase 02:**
-
-This is a major feature requiring significant design work. Deferred to Phase 04 or later.
+This is a major undertaking and requires significant design work. Not planned for near-term.
 
 ---
 
 ## Implementation Priority
 
-| Feature | Priority | Complexity | Phase |
-|---------|----------|------------|-------|
-| UDP Health Checks | High | Medium | Phase 02 |
-| Enhanced IPVS Metrics | Medium | Low | Phase 02 |
-| TLS Config Replication | Medium | High | Phase 03 |
-| Nginx Converter | Low | Medium | Phase 03 |
-| Kubernetes Integration | Low | Very High | Phase 04+ |
+Here's what we're building, in order:
+
+| Feature | Priority | Why |
+|---------|----------|-----|
+| **Connection state docs** | **Critical** | Quick win, high operator value |
+| **Dry-run diff** | **Critical** | Prevent production incidents |
+| **Snapshot/rollback** | **Critical** | Fast recovery from mistakes |
+| **Change rate limiting** | **High** | Prevent accidental mass deletion |
+| **Pre-flight checks** | **High** | Fail fast with clear errors |
+| UDP health checks (DNS) | High | Most requested feature |
+| Enhanced IPVS metrics | Medium | Operational visibility |
+| Config replication | Medium | Enterprise HA feature |
+| Nginx converter | Low | Migration convenience |
+| Kubernetes integration | Low | Major project, future |
+
+**Key principle:** Safety before features. We won't add new capabilities until we have proper guardrails in place.
 
 ---
 
-## Contributing
+## What's Still Missing
 
-Feature requests and design feedback are welcome. Please open an issue on GitHub with:
-- Use case description
-- Expected behavior
-- Integration points with existing features
+Ideas for future work (not yet prioritized):
+
+- **Observability for config churn:** Metrics on reconcile frequency, change velocity, rollback count
+- **Gradual rollout:** Canary backends (route 10% traffic to new backend before full weight)
+- **Circuit breakers:** Automatically disable backends after N consecutive failures
+- **Multi-VIP support:** Single daemon managing multiple VIPs (currently one daemon per VIP)
+
+---
+
+## How to Contribute
+
+We welcome feature requests and design feedback! When opening an issue, please include:
+
+- **Use case:** What problem are you trying to solve?
+- **Expected behavior:** What should happen?
+- **Production impact:** What breaks if this feature has a bug?
+
+When proposing features, consider:
+- **Blast radius:** How much damage can a bug cause?
+- **Operational burden:** What new failure modes does this introduce?
+- **Footguns:** Can operators misconfigure this in dangerous ways?
+
+We prioritize features that are:
+1. Safe by default
+2. Hard to misuse
+3. Solve real production problems
+
+---
+
+## Questions?
+
+- **Why DNS checks before echo checks?** Echo requires deploying separate listeners (security risk, ops burden). DNS validates your actual service.
+- **Why dry-run and snapshots?** IPVS programming is kernel-level—mistakes drop traffic. We need multiple safety layers.
+- **Why cardinality warnings for metrics?** Per-backend metrics can create thousands of series. This can overload Prometheus at scale.
+- **Why content-addressed bundles for config sync?** Simpler than JSON-RPC, atomic updates, replay protection built-in.
 
 ---
 
 ## References
 
-- [Phase 01 Spec](spec.md)
-- [Engineering Standards](engineering-standards.md)
-- [Progress Tracker](PROGRESS.md)
+- [Phase 01 Spec](spec.md) - Current implementation details
+- [Engineering Standards](engineering-standards.md) - Code quality guidelines
+- [Progress Tracker](PROGRESS.md) - What's been completed
+- [Kubernetes Loop Article](kubernetes-loop-in-libraflux.md) - Design philosophy
 
+---
+
+**Last Updated:** December 2025

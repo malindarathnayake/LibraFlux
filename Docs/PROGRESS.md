@@ -4,7 +4,7 @@
 **Phase:** 11 - Code Quality & Safety Fixes ✓ COMPLETE  
 **Last Completed:** Phase 11 complete - 3 critical safety fixes implemented and validated ✓ PASS  
 **Current Issue:** None - All critical production safety issues resolved  
-**Next Up:** Phase 12 - Roadmap Features (UDP Health Checks, Enhanced Metrics, TLS Replication, Nginx Converter)
+**Next Up:** Phase 03B - Production Guardrails (PRIORITY: Safety before features)
 
 ---
 
@@ -149,7 +149,80 @@
 
 ---
 
-## Planned Features (Phase 12+)
+## Planned Features (Phases 03B, 12+)
+
+### Phase 03B: Production Guardrails & Safety (PRIORITY)
+**Priority:** Critical | **Status:** Planned | **Rationale:** Safety before features
+
+#### 03B-1: Connection State Documentation (Quick Win)
+- [ ] Document current IPVS behavior during config changes
+- [ ] Add to `Docs/spec.md` § Operational Behavior
+- [ ] Document backend removal → immediate connection drop
+- [ ] Document weight=0 → scheduler-dependent behavior
+- [ ] Document service deletion → all connections dropped
+- [ ] Add operator workaround: set weight=0, wait, then remove
+- [ ] Update README with connection state warning
+
+#### 03B-2: Dry-Run Diff (Pre-Apply Validation)
+- [ ] Add `ReconcilePlan` struct to `internal/ipvs/reconciler.go`
+- [ ] Implement `Plan()` method (diff without execution)
+- [ ] Refactor `Apply()` to use `Plan()` + `Execute()`
+- [ ] Add `--dry-run` flag to `lbctl apply` command
+- [ ] Format diff output (CREATE/UPDATE/DELETE with colors)
+- [ ] Unit tests: Plan() produces correct diff
+- [ ] Integration tests: Dry-run matches actual apply
+- [ ] Documentation: Add examples to operator guide
+
+#### 03B-3: Snapshot & Rollback Primitives
+- [ ] Design snapshot JSON schema (services + destinations)
+- [ ] Implement `lbctl snapshot create --name <name>`
+- [ ] Implement `lbctl snapshot restore --name <name>`
+- [ ] Implement `lbctl snapshot list`
+- [ ] Add snapshot storage in `/var/lib/lbctl/snapshots/`
+- [ ] Add automatic pre-apply snapshots (optional config)
+- [ ] Add snapshot retention policy (keep last N)
+- [ ] Unit tests: Snapshot create/restore cycle
+- [ ] E2E tests: Apply → break → rollback → verify
+- [ ] Documentation: Add rollback runbook
+
+#### 03B-4: Change Rate Limiting
+- [ ] Add `change_limits` config section
+- [ ] Implement `max_services_per_apply` limit
+- [ ] Implement `max_destinations_per_service` limit
+- [ ] Implement `max_deletes_per_apply` limit
+- [ ] Add `--force` flag to bypass limits
+- [ ] Log warnings when approaching limits
+- [ ] Emit metrics: `lbctl_change_limit_hit_total`
+- [ ] Unit tests: Limits enforced correctly
+- [ ] Integration tests: Large config rejected
+- [ ] Documentation: Add safety limits guide
+
+#### 03B-5: Pre-Flight Checks
+- [ ] Implement `PreFlightCheck()` in reconciler
+- [ ] Check for duplicate services
+- [ ] Validate VIP is present
+- [ ] Check kernel connection table capacity
+- [ ] Verify no orphaned services (VIP mismatch)
+- [ ] Confirm IPVS modules loaded
+- [ ] Add `lbctl preflight --config <file>` command
+- [ ] Unit tests: Each check independently
+- [ ] Integration tests: Real kernel checks
+- [ ] Documentation: Add preflight checklist
+
+#### 03B-6: Connection Draining (Future)
+- [ ] Design drain config schema
+- [ ] Add `GetDestinationActiveConns()` to manager
+- [ ] Implement `drainDestination()` in reconciler
+- [ ] Poll active connections until 0 or timeout
+- [ ] Emit audit event: `backend_drained`
+- [ ] Add config option: `drain.enabled`, `drain.timeout_seconds`
+- [ ] Unit tests: Mock active connection polling
+- [ ] Integration tests: Real IPVS connection draining
+- [ ] Documentation: Add drain behavior guide
+
+---
+
+## Roadmap Features (Phase 12+)
 
 ### Phase 12A: UDP Health Checks (Echo/Ack Protocol)
 **Priority:** High | **Status:** Planned
@@ -218,15 +291,23 @@
 
 ## Roadmap Status
 
-| Feature | Priority | Complexity | Phase | Status |
-|---------|----------|------------|-------|--------|
-| UDP Health Checks | High | Medium | 12A | Planned |
-| Enhanced IPVS Metrics | Medium | Low | 12B | Planned |
-| TLS Config Replication | Medium | High | 12C | Planned |
-| Nginx Converter | Low | Medium | 12D | Planned |
-| Kubernetes Integration | Low | Very High | 14+ | Future |
+| Feature | Priority | Complexity | Risk | Phase | Status |
+|---------|----------|------------|------|-------|--------|
+| **Connection State Docs** | **Critical** | **Low** | **High** | **03B-1** | **Planned** |
+| **Dry-Run Diff** | **Critical** | **Medium** | **High** | **03B-2** | **Planned** |
+| **Snapshot/Rollback** | **Critical** | **Medium** | **High** | **03B-3** | **Planned** |
+| **Change Rate Limiting** | **High** | **Low** | **Medium** | **03B-4** | **Planned** |
+| **Pre-Flight Checks** | **High** | **Low** | **Medium** | **03B-5** | **Planned** |
+| UDP Health Checks (DNS) | High | Medium | Medium | 12A | Planned |
+| Enhanced IPVS Metrics | Medium | Low | Medium | 12B | Planned |
+| TLS Config Replication | Medium | High | High | 12C | Planned |
+| Nginx Converter | Low | Medium | Low | 12D | Planned |
+| Connection Draining | Medium | Medium | Low | 03B-6 | Future |
+| Kubernetes Integration | Low | Very High | High | 14+ | Future |
 
-See [ROADMAP.md](ROADMAP.md) for detailed specifications.
+**Priority Rationale:** Phase 03B (Safety) must complete before Phase 12 (Features). Production safety is non-negotiable.
+
+See [ROADMAP.md](ROADMAP.md) for detailed specifications and critique responses.
 
 ---
 
