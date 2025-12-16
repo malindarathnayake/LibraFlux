@@ -38,8 +38,10 @@ tmp/
 *.tmp
 *.log
 
-# Documentation (internal/working docs)
-Docs/
+# Documentation (internal/working docs - exclude from tracking)
+Docs/engineering-standards.md
+Docs/kubernetes-loop-in-libraflux.md
+Docs/spec.md
 
 # Debug artifacts
 debug_*.go

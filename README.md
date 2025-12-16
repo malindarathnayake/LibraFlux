@@ -51,7 +51,10 @@ Existing L4 load balancers often require separate exporters for metrics or compl
 ## Quick Start
 
 ```bash
-# Build
+# Install (one-shot installer)
+curl -fsSL https://raw.githubusercontent.com/malindarathnayake/LibraFlux/main/Deployment/install.sh | sudo bash
+
+# Or build from source
 go build -o lbctl ./cmd/lbctl
 
 # Validate configuration
@@ -59,7 +62,7 @@ sudo ./lbctl validate --config /etc/lbctl/config.yaml
 
 # Run daemon (VIP-aware reconciliation)
 sudo ./lbctl apply --daemon --config /etc/lbctl/config.yaml
-
+                
 # Interactive shell
 sudo ./lbctl --config /etc/lbctl/config.yaml
 ```
@@ -126,6 +129,17 @@ Run diagnostics:
 sudo ./lbctl doctor
 ```
 
+## Roadmap
+
+LibraFlux is under active development. Planned features include:
+
+- **UDP Health Checks** - Echo/ack protocol for connectionless services (DNS, SIP, game servers)
+- **Enhanced IPVS Metrics** - Traffic counters, connection stats, and latency histograms
+- **TLS Config Replication** - Built-in control plane for automatic Primary → Secondary config sync
+- **Nginx Converter** - Migrate from Nginx `stream` blocks to LibraFlux declarative config
+
+See [Docs/ROADMAP.md](Docs/ROADMAP.md) for detailed specifications and implementation plans.
+
 ## Contributing
 
 Thanks for taking the time to join our community and start contributing! We welcome pull requests. Feel free to dig through the [issues](https://github.com/yourusername/LibraFlux/issues) and jump in.
@@ -141,3 +155,4 @@ Apache 2.0
 - [Deployment Guide](Deployment/README.md)
 - [Engineering Standards](Docs/engineering-standards.md)
 - [Project Progress](Docs/PROGRESS.md)
+- [Feature Roadmap](Docs/ROADMAP.md)

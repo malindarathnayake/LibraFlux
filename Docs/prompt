@@ -1,0 +1,604 @@
+# lbctl - Cursor Implementation Prompt
+
+## Project Overview
+
+Build `lbctl`, a kernel-level L4 load balancer controller using Linux IPVS for the data plane and FRR VRRP for VIP failover. Single Go binary for AlmaLinux 9.
+
+**Read the full spec first:** `@_docs/spec.md`
+
+---
+
+## Before Starting: Check Progress
+
+**On every session start, scan the project and update progress:**
+
+1. Check which files exist in `internal/` and `cmd/`
+2. Check which `*_test.go` files exist and if tests pass
+3. Update `Docs/PROGRESS.md` with current state
+4. Resume from where you left off
+
+```bash
+# Quick scan
+find . -name "*.go" -type f | grep -v "_test.go" | sort
+find . -name "*_test.go" -type f | sort
+go test ./... -v 2>&1 | tail -20
+```
+
+---
+
+## Progress Tracking: `Docs/PROGRESS.md`
+
+Maintain this file throughout implementation:
+
+```markdown
+# lbctl Implementation Progress
+
+## Current Status
+**Phase:** 1 - Core Infrastructure
+**Last Completed:** logger.go + logger_test.go
+**Next Up:** metrics.go + metrics_test.go
+**Blocked:** (none)
+
+## Checklist
+
+### Phase 1: Core Infrastructure
+- [x] observability/logger.go
+- [x] observability/logger_test.go ✓ PASS
+- [ ] observability/metrics.go
+- [ ] observability/metrics_test.go
+- [ ] observability/audit.go
+- [ ] observability/audit_test.go
+- [ ] config/types.go
+- [ ] config/loader.go
+- [ ] config/validator.go
+- [ ] config/writer.go
+- [ ] config/config_test.go
+- [ ] **CHECKPOINT: go test ./internal/... -v** 
+
+### Phase 2: System Integration
+- [ ] system/interfaces.go
+- [ ] system/doctor.go
+- [ ] system/system_test.go
+- [ ] system/frr.go
+- [ ] system/frr_test.go
+- [ ] system/sysctl.go
+- [ ] system/tuning.go
+- [ ] system/sysctl_test.go
+- [ ] **CHECKPOINT: go test ./internal/... -v**
+
+### Phase 3: IPVS & Health
+- [ ] ipvs/types.go
+- [ ] ipvs/manager.go
+- [ ] ipvs/reconciler.go
+- [ ] ipvs/ipvs_test.go
+- [ ] health/checker.go
+- [ ] health/scheduler.go
+- [ ] health/health_test.go
+- [ ] **CHECKPOINT: go test ./internal/... -v**
+
+### Phase 4: Observability Backends
+- [ ] observability/influx.go
+- [ ] observability/prometheus.go
+- [ ] observability/backends_test.go
+- [ ] **CHECKPOINT: go test ./internal/... -v**
+
+### Phase 5: Daemon
+- [ ] daemon/signals.go
+- [ ] daemon/engine.go
+- [ ] daemon/daemon_test.go
+- [ ] **CHECKPOINT: go test ./internal/... -v**
+
+### Phase 6: Interactive Shell
+- [ ] shell/lock.go
+- [ ] shell/lock_test.go
+- [ ] shell/shell.go
+- [ ] shell/commands.go
+- [ ] shell/completion.go
+- [ ] shell/help.go
+- [ ] shell/shell_test.go
+- [ ] shell/config_mode.go
+- [ ] shell/service_mode.go
+- [ ] shell/modes_test.go
+- [ ] **CHECKPOINT: go test ./internal/... -v**
+
+### Phase 7: CLI Entry Point
+- [ ] cmd/lbctl/main.go
+- [ ] cmd/lbctl/main_test.go
+- [ ] **CHECKPOINT: go test ./... -v**
+
+### Phase 8: Distribution
+- [ ] dist/lbctl.service
+- [ ] dist/config.yaml.example
+- [ ] dist/config.d/example-service.yaml
+- [ ] dist/modules-load.d-ipvs.conf
+- [ ] Makefile
+- [ ] **FINAL: make test**
+
+## Test Results Log
+
+| Date | Phase | Tests | Result |
+|------|-------|-------|--------|
+| 2025-06-14 | 1a | logger | ✓ PASS |
+
+## Notes
+- (Add blockers, decisions, or issues here)
+```
+
+**Update this file after each completed unit.** Mark files with:
+- `[x]` - implemented
+- `✓ PASS` - tests passing
+- `✗ FAIL` - tests failing (add note)
+- `⚠ SKIP` - skipped (add reason)
+
+---
+
+## Implementation Order
+
+**First: Check `Docs/PROGRESS.md` and resume from last completed unit.**
+
+Work through these files in sequence. **Write tests alongside each file. Stop after each testable unit.**
+
+### Phase 1: Core Infrastructure
+
+**Unit 1a: Logger (test immediately)**
+1. `internal/observability/logger.go` - Dual output logger (console + GELF accumulator)
+2. `internal/observability/logger_test.go` - Test levels, format, thread safety
+   ```bash
+   go test ./internal/observability/... -v -run Logger
+   ```
+
+**Unit 1b: Metrics (test immediately)**
+3. `internal/observability/metrics.go` - Metrics registry and types
+4. `internal/observability/metrics_test.go` - Test counter/gauge operations
+   ```bash
+   go test ./internal/observability/... -v -run Metrics
+   ```
+
+**Unit 1c: Audit (needs logger)**
+5. `internal/observability/audit.go` - Audit event definitions and emitter
+6. `internal/observability/audit_test.go` - Test event emission
+   ```bash
+   go test ./internal/observability/... -v
+   ```
+
+**Unit 1d: Config (test as group - interdependent)**
+7. `internal/config/types.go` - Config structs with YAML tags
+8. `internal/config/loader.go` - YAML parsing, `${VARNAME}` env resolution, glob include
+9. `internal/config/validator.go` - Validation rules (format, bounds, injection)
+10. `internal/config/writer.go` - Write service YAML files to config.d/
+11. `internal/config/config_test.go` - Test validation, env resolution, merge, write
+    ```bash
+    go test ./internal/config/... -v
+    ```
+
+**✓ CHECKPOINT: Phase 1 complete**
+```bash
+go test ./internal/... -v
+```
+
+### Phase 2: System Integration
+
+**Unit 2a: Interfaces + Doctor (test together)**
+12. `internal/system/interfaces.go` - Network interface and VIP detection
+13. `internal/system/doctor.go` - Diagnostic checks
+14. `internal/system/system_test.go` - Test interface detection, doctor checks (mock where needed)
+
+**Unit 2b: FRR (test with temp files)**
+15. `internal/system/frr.go` - FRR config patcher (managed block)
+16. `internal/system/frr_test.go` - Test block parsing, patching, preserve outside content
+
+**Unit 2c: Sysctl + Tuning (test with temp files)**
+17. `internal/system/sysctl.go` - Sysctl file management
+18. `internal/system/tuning.go` - Host tuning profiles
+19. `internal/system/sysctl_test.go` - Test generation, profile selection
+
+**✓ CHECKPOINT: Phase 2 complete**
+```bash
+go test ./internal/... -v
+```
+
+### Phase 3: IPVS & Health
+
+**Unit 3a: IPVS types + manager (mock netlink for tests)**
+20. `internal/ipvs/types.go` - Service/Destination structs
+21. `internal/ipvs/manager.go` - Netlink IPVS operations
+22. `internal/ipvs/reconciler.go` - Diff-based state reconciliation
+23. `internal/ipvs/ipvs_test.go` - Test diff logic, port expansion (mock netlink)
+
+**Unit 3b: Health checker (mock TCP dialer)**
+24. `internal/health/checker.go` - TCP connect health check
+25. `internal/health/scheduler.go` - Health check scheduling, state machine
+26. `internal/health/health_test.go` - Test state machine transitions, scheduling
+
+**✓ CHECKPOINT: Phase 3 complete**
+```bash
+go test ./internal/... -v
+```
+
+### Phase 4: Observability Backends
+
+**Unit 4a: InfluxDB + Prometheus (mock HTTP)**
+27. `internal/observability/influx.go` - InfluxDB push client
+28. `internal/observability/prometheus.go` - Prometheus HTTP endpoint
+29. `internal/observability/backends_test.go` - Test push format, metrics endpoint
+
+**✓ CHECKPOINT: Phase 4 complete**
+```bash
+go test ./internal/... -v
+```
+
+### Phase 5: Daemon
+
+**Unit 5a: Signals + Engine (integration test)**
+30. `internal/daemon/signals.go` - SIGHUP/SIGTERM handling
+31. `internal/daemon/engine.go` - Main run loop
+32. `internal/daemon/daemon_test.go` - Test signal handling, VIP monitor loop (mock deps)
+
+**✓ CHECKPOINT: Phase 5 complete**
+```bash
+go test ./internal/... -v
+```
+
+### Phase 6: Interactive Shell
+
+**Unit 6a: Lock (test with temp files + mock PID)**
+33. `internal/shell/lock.go` - Config mode exclusive locking
+34. `internal/shell/lock_test.go` - Test acquire, release, stale detection, timeout
+
+**Unit 6b: Shell core (test command parsing)**
+35. `internal/shell/shell.go` - Main shell loop with readline
+36. `internal/shell/commands.go` - Top-level command definitions
+37. `internal/shell/completion.go` - Tab completion
+38. `internal/shell/help.go` - `?` help system
+39. `internal/shell/shell_test.go` - Test command routing, completion
+
+**Unit 6c: Config modes (test state transitions)**
+40. `internal/shell/config_mode.go` - Configure mode state machine
+41. `internal/shell/service_mode.go` - Service configuration handlers
+42. `internal/shell/modes_test.go` - Test mode transitions, pending changes
+
+**✓ CHECKPOINT: Phase 6 complete**
+```bash
+go test ./internal/... -v
+```
+
+### Phase 7: CLI Entry Point
+
+43. `cmd/lbctl/main.go` - CLI entry, TTY detection, shell vs direct command routing
+44. `cmd/lbctl/main_test.go` - Test CLI arg parsing, mode selection
+
+**✓ CHECKPOINT: All unit tests pass**
+```bash
+go test ./... -v
+```
+
+### Phase 8: Distribution
+
+45. `dist/lbctl.service` - systemd unit
+46. `dist/config.yaml.example` - Example main config
+47. `dist/config.d/example-service.yaml` - Example service definition
+48. `dist/modules-load.d-ipvs.conf` - IPVS kernel modules
+49. `Makefile` - Build targets (build, test, rpm)
+
+**✓ FINAL: Full test suite**
+```bash
+make test
+```
+
+---
+
+## Rules
+
+**On every new session:**
+1. Read `Docs/PROGRESS.md` to see current state
+2. Scan existing files to verify progress is accurate
+3. Run `go test ./internal/... -v` to check test status
+4. Resume from next incomplete item
+
+**During implementation:**
+1. **After each file, write tests for it** - Create `*_test.go` alongside the implementation
+2. **If testing requires dependencies, build them first** - If module A needs module B to test properly, implement B, then test A+B together
+3. **Run tests before proceeding** - Confirm the stack works before moving to next phase
+4. **Update `Docs/PROGRESS.md` after each unit** - Mark completed items, log test results
+5. **Stop for review after each testable unit** - A "unit" may be 1-3 files that form a testable component
+6. **No features beyond the spec** - If it's not in spec.md, don't add it
+7. **Ask if ambiguous** - Don't guess, ask before proceeding
+8. **Environment variables for credentials** - Use `${VARNAME}` pattern, never hardcode
+9. **Error handling is mandatory** - Every external call needs error handling
+
+---
+
+## Testing Strategy
+
+### Test Each Module As Built
+
+```
+Phase 1: observability/logger.go
+         └── logger_test.go (test immediately - no deps)
+         
+Phase 1: observability/metrics.go  
+         └── metrics_test.go (test immediately - no deps)
+
+Phase 1: observability/audit.go
+         └── audit_test.go (may need logger - test together)
+
+Phase 1: config/types.go + loader.go + validator.go
+         └── config_test.go (test as unit - they're interdependent)
+```
+
+### Integration Test Checkpoints
+
+After completing each phase, run all tests to verify the stack:
+
+```bash
+go test ./internal/... -v
+```
+
+### Test Requirements by Module
+
+| Module | Test Focus | Mocking Needed |
+|--------|------------|----------------|
+| logger.go | Output format, levels, thread safety | None |
+| metrics.go | Registry, counter/gauge operations | None |
+| audit.go | Event emission, field population | Mock logger |
+| config/*.go | Validation rules, env resolution, merge | Temp files |
+| shell/lock.go | Acquire, release, stale detection, timeout | Temp files, mock PID |
+| ipvs/*.go | Diff logic, service/dest structs | Mock netlink |
+| health/*.go | State machine transitions, scheduling | Mock TCP dialer |
+| system/*.go | FRR parsing, sysctl generation | Temp files |
+
+### What "Testable" Means
+
+A file is testable when you can:
+1. Instantiate its types
+2. Call its functions with controlled inputs
+3. Assert expected outputs or side effects
+
+If you can't test a file in isolation, identify what dependency is needed and build that first.
+
+---
+
+## Key Architectural Decisions (from spec)
+
+### Config Loading
+- Main config: `/etc/lbctl/config.yaml` (globals only)
+- Services: `/etc/lbctl/config.d/*.yaml` (one file per service)
+- Env vars: `${VARNAME}` syntax, resolved at load time, validation runs AFTER resolution
+- Shell writes to config.d/, never touches main config
+
+### VIP Detection
+```go
+// CORRECT - check any interface
+func checkVIPPresent(vip string) bool {
+    // Iterate all interfaces, check if VIP exists on any
+}
+
+// WRONG - assumes VIP is on frontend interface
+func checkVIPOnInterface(iface, vip string) bool { ... }
+```
+
+### Runtime Gating
+```go
+// reconciler.apply() MUST only be called when VIP is owned
+if currentlyActive {
+    reconciler.Apply(config.Services)
+}
+// When standby: update in-memory config but DO NOT program IPVS
+```
+
+### SIGHUP Behavior
+1. Re-read config (with env resolution)
+2. Validate
+3. If invalid → log error, keep previous config
+4. If valid → update in-memory config
+   - If ACTIVE → apply via reconciler immediately
+   - If STANDBY → defer until VIP acquired
+5. Emit audit event (even if standby)
+
+### Config Lock
+- Location: `/var/run/lbctl/config.lock`
+- Mechanism: flock(LOCK_EX | LOCK_NB) + JSON metadata
+- Stale detection: kill(pid, 0) + check /proc/{pid}/comm == "lbctl"
+- Idle timeout: 10 minutes default, releases lock automatically
+- Break: `lock break --force` sends SIGTERM→SIGKILL to holder
+
+### FRR Managed Block
+```
+! BEGIN LBCTL MANAGED - DO NOT EDIT
+interface ens160
+ vrrp 50 version 3
+ vrrp 50 priority 150
+ vrrp 50 advertisement-interval 100
+ vrrp 50 ip 192.168.94.250
+!
+! END LBCTL MANAGED
+```
+- Only modify between markers
+- Preserve everything outside
+- advertisement-interval is centiseconds (ms / 10)
+
+### Health Check State Machine
+```
+UNKNOWN → HEALTHY:     first successful check
+HEALTHY → UNHEALTHY:   fail_after consecutive failures → weight=0
+UNHEALTHY → HEALTHY:   recover_after consecutive successes → restore weight
+```
+
+---
+
+## Dependencies
+
+```go
+require (
+    github.com/vishvananda/netlink v1.1.0
+    github.com/moby/ipvs v1.1.0
+    gopkg.in/yaml.v3 v3.0.1
+    github.com/influxdata/influxdb-client-go/v2 v2.13.0
+    github.com/prometheus/client_golang v1.19.0
+    github.com/Graylog2/go-gelf v0.0.0-20191017102106-1550ee647df0
+    github.com/spf13/cobra v1.8.0
+    github.com/chzyer/readline v1.5.1
+)
+```
+
+---
+
+## File Structure Reference
+
+```
+lbctl/
+├── cmd/lbctl/main.go
+├── internal/
+│   ├── config/
+│   │   ├── types.go
+│   │   ├── loader.go
+│   │   ├── validator.go
+│   │   └── writer.go
+│   ├── shell/
+│   │   ├── shell.go
+│   │   ├── commands.go
+│   │   ├── completion.go
+│   │   ├── help.go
+│   │   ├── lock.go
+│   │   ├── config_mode.go
+│   │   └── service_mode.go
+│   ├── observability/
+│   │   ├── logger.go
+│   │   ├── metrics.go
+│   │   ├── influx.go
+│   │   ├── prometheus.go
+│   │   └── audit.go
+│   ├── ipvs/
+│   │   ├── types.go
+│   │   ├── manager.go
+│   │   └── reconciler.go
+│   ├── health/
+│   │   ├── checker.go
+│   │   └── scheduler.go
+│   ├── system/
+│   │   ├── interfaces.go
+│   │   ├── doctor.go
+│   │   ├── frr.go
+│   │   ├── sysctl.go
+│   │   └── tuning.go
+│   └── daemon/
+│       ├── engine.go
+│       └── signals.go
+├── dist/
+│   ├── lbctl.service
+│   ├── config.yaml.example
+│   ├── config.d/example-service.yaml
+│   └── modules-load.d-ipvs.conf
+├── _docs/
+│   └── spec.md
+├── go.mod
+├── go.sum
+└── Makefile
+```
+
+---
+
+## Testing Expectations
+
+### Test Patterns
+
+**Table-driven tests** - Use Go's standard table-driven pattern:
+```go
+func TestValidation(t *testing.T) {
+    tests := []struct {
+        name    string
+        input   Config
+        wantErr bool
+    }{
+        {"valid config", validConfig(), false},
+        {"missing VIP", configWithoutVIP(), true},
+        // ...
+    }
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            err := Validate(tt.input)
+            if (err != nil) != tt.wantErr {
+                t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+            }
+        })
+    }
+}
+```
+
+**Temp files for filesystem tests:**
+```go
+func TestFRRPatch(t *testing.T) {
+    tmpDir := t.TempDir()
+    frrPath := filepath.Join(tmpDir, "frr.conf")
+    // ... write test content, run patcher, verify result
+}
+```
+
+**Mock interfaces for external deps:**
+```go
+type IPVSManager interface {
+    ListServices() ([]Service, error)
+    AddService(svc Service) error
+    // ...
+}
+
+// In tests, use mockIPVSManager that records calls
+```
+
+### Coverage Targets
+
+| Package | Min Coverage | Focus Areas |
+|---------|-------------|-------------|
+| config | 90% | Validation rules, env resolution, edge cases |
+| shell/lock | 95% | All lock states, stale detection, timeout |
+| ipvs | 80% | Diff logic (mock netlink calls) |
+| health | 90% | State machine transitions |
+| system | 70% | FRR parsing, sysctl generation |
+
+### Running Tests
+
+```bash
+# Single package
+go test ./internal/config/... -v
+
+# All packages
+go test ./internal/... -v
+
+# With coverage
+go test ./internal/... -coverprofile=coverage.out
+go tool cover -html=coverage.out
+
+# Race detection (important for logger, metrics)
+go test ./internal/... -race
+```
+
+---
+
+## Start
+
+**First session?** Create `Docs/PROGRESS.md` using the template above, then begin with `internal/observability/logger.go`.
+
+**Resuming?** Check `Docs/PROGRESS.md`, verify with file scan, continue from next incomplete item.
+
+### First File: `internal/observability/logger.go`
+
+Requirements:
+- Dual output: console (human-readable) + GELF accumulator (structured)
+- Log levels: debug, info, warn, error
+- Structured fields support (key-value pairs)
+- GELF output disabled until explicitly initialized
+- Thread-safe
+- Console format: `[LEVEL] message key=value key=value`
+
+After implementation, create `internal/observability/logger_test.go`:
+- Test each log level outputs correctly
+- Test structured fields appear in output
+- Test thread safety (concurrent writes)
+- Test GELF disabled by default
+
+Run tests:
+```bash
+go test ./internal/observability/... -v -run Logger
+```
+
+Update `Docs/PROGRESS.md`, then show me the implementation and tests.
