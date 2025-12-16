@@ -1,6 +1,3 @@
-<p align="center">
-  <img src="_logo/logo.svg" alt="LibraFlux Logo" width="600">
-
 Kernel-Level L4 Load Balancing with Native Observability
 
 ![LibraFlux Logo](_logo/logo.svg)
