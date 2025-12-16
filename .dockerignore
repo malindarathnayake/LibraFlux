@@ -6,9 +6,10 @@
 **/*.swo
 **/.DS_Store
 **/node_modules
-dist
 bin
 out
 tmp
 vendor
+Docs
+_logo
 

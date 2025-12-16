@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+# Dockerfile for testing deploy.sh in a clean AlmaLinux environment
+
+ARG GO_VERSION=1.23.0
+
+# Stage 1: Build binary
+FROM almalinux:9 AS builder
+
+ARG GO_VERSION
+
+RUN dnf -y update && \
+    dnf -y install ca-certificates curl-minimal tar gzip git make && \
+    dnf -y clean all
+
+RUN set -euo pipefail; \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz; \
+    tar -C /usr/local -xzf /tmp/go.tgz; \
+    rm -f /tmp/go.tgz
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
+RUN go build -o /out/lbctl ./cmd/lbctl
+
+# Stage 2: Deploy test environment
+FROM almalinux:9
+
+# Install deps for deploy script testing
+RUN dnf -y update && \
+    dnf -y install \
+        systemd \
+        kmod \
+        procps-ng \
+        iproute \
+        which \
+        bash-completion \
+        && \
+    dnf -y clean all
+
+# Create fake modprobe for container (modules load on host kernel)
+RUN echo '#!/bin/bash' > /usr/local/bin/modprobe && \
+    echo 'echo "[MOCK] modprobe $*"' >> /usr/local/bin/modprobe && \
+    chmod +x /usr/local/bin/modprobe
+
+# Create fake systemctl for container
+RUN echo '#!/bin/bash' > /usr/local/bin/systemctl && \
+    echo 'echo "[MOCK] systemctl $*"' >> /usr/local/bin/systemctl && \
+    chmod +x /usr/local/bin/systemctl
+
+WORKDIR /app
+
+# Copy built binary
+COPY --from=builder /out/lbctl /app/lbctl
+
+# Copy dist files for config examples
+COPY dist/ ./dist/
+
+# Copy deploy script
+COPY scripts/deploy.sh /scripts/deploy.sh
+RUN chmod +x /scripts/deploy.sh
+
+# Default: show help
+CMD ["/scripts/deploy.sh", "--help"]
+

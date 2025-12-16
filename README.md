@@ -1,76 +1,55 @@
 <p align="center">
   <img src="_logo/logo.svg" alt="LibraFlux Logo" width="600">
-</p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Go-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
-  <img src="https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge" alt="License">
-  <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux">
-</p>
+Kernel-Level L4 Load Balancing with Native Observability
 
-**Kernel-level L4 load balancer using Linux IPVS for data plane and FRR VRRP for VIP failover.**
+![LibraFlux Logo](_logo/logo.svg)
 
-LibraFlux (ships as the `lbctl` binary) runs a Kubernetes-style reconciliation loop to keep Linux IPVS aligned to a declarative config, with health checks driving backend weight (healthy → configured weight, unhealthy → `0`).
+[![Go](https://img.shields.io/badge/Go-00ADD8?style=flat&logo=go&logoColor=white)](https://golang.org) [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat)](LICENSE) [![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black)](https://kernel.org)
 
-For HA, LibraFlux is designed to run alongside FRR/keepalived VRRP: it becomes active and reconciles only when it detects the VIP is present on the node (VIP assignment is handled by VRRP, not by `lbctl`).
+## Overview
 
-## Why LibraFlux over Nginx/HAProxy?
+Declarative L4 load balancer using Linux IPVS with built-in observability and Kubernetes-style reconciliation.
 
-LibraFlux is fundamentally different. Nginx and HAProxy are **User-Space Reverse Proxies**. LibraFlux is a **Kernel-Space Controller** for IPVS.
+LibraFlux (`lbctl`) is designed for:
 
-### Direct Server Return (DSR) / High Throughput
+- **Bare-Metal** infrastructure
+- **High-Availability** setups with VRRP (FRR/keepalived)
+- **Internal services** (databases, K8s clusters, DNS)
+- **Monitoring-first** environments requiring native telemetry
 
-This is the biggest differentiator.
-
-- **Nginx/HAProxy**: `Client → LB → Server → LB → Client`. The LB processes all return traffic and becomes a bottleneck.
-- **LibraFlux (IPVS)**: In **DR mode**, `Client → LB → Server → Client` (return path bypasses the LB). In **NAT mode**, return traffic still traverses the LB.
-
-DR mode requires backend host preparation (VIP on loopback + ARP suppression, usually same L2). For local validation inside Docker, the provided functional harness uses NAT mode by default.
-
-### Self-Healing Reconciliation Loop
-
-Nginx and HAProxy are static daemons—load config and run. 
-
-LibraFlux works like a Kubernetes Controller:
-- Constantly checks **Current State** (Kernel IPVS tables)
-- Compares to **Desired State** (Config)
-- Applies changes to converge toward the desired state (and keeps retrying on failures)
-
-This helps recover from drift (e.g., manual changes to IPVS), while surfacing behavior via logs/metrics/audit events.
-
-### Layer 4 Only = Minimal Overhead
-
-- **Nginx/HAProxy**: Excel at Layer 7—URL routing, SSL termination, header manipulation.
-- **LibraFlux**: Layer 4 only. IPs and Ports. Cannot see URLs or certificates.
-
-If you're balancing DNS servers, database clusters, or raw TCP/UDP streams, Nginx is often unnecessary complexity. LibraFlux programs the kernel data plane directly and avoids L7 parsing/termination.
-
-### When to Use What
-
-| Criteria | Nginx / HAProxy | LibraFlux |
-|----------|-----------------|-----------|
-| Traffic Type | HTTP, HTTPS, WebSockets, gRPC | Raw TCP, UDP, High-Volume Data |
-| Return Path | Always via LB | DR mode can bypass LB |
-| Logic | Smart (URLs, Headers, Cookies) | Fast (IPs and Ports) |
-| Architecture | User-Space Proxy | Kernel-Space Controller |
-
-**Use LibraFlux**: A declarative L4 controller for internal infrastructure (databases, K8s clusters, DNS) using Linux IPVS, with optional DR mode for high-throughput return paths.
-
-**Use Nginx/HAProxy**: Websites, SSL termination, URL-based routing, public internet traffic.
+**NOTE:** Full documentation available in the [Deployment](Deployment/) and [Docs](Docs/) directories.
 
 ## Features
 
 - **IPVS Management** - Direct kernel-level L4 load balancing via netlink
 - **Reconciliation Loop** - Kubernetes-style desired-state controller
-- **Health Checking** - TCP health probes with configurable thresholds and weight-to-zero behavior on failures
-- **HA Aware** - Gated reconciliation based on VIP presence (designed to work with FRR/keepalived VRRP)
-- **FRR Integration** - Optional FRR config managed-block patching for VRRP stanzas
+- **Health Checking** - TCP probes with automatic weight adjustment (healthy → configured weight, unhealthy → 0)
+- **HA Aware** - VIP-gated reconciliation for active/standby operation with VRRP
+- **FRR Integration** - Optional managed-block patching for VRRP configuration
 - **Interactive Shell** - Network-device-style CLI for configuration and inspection
-- **Observability First** - Prometheus metrics, optional InfluxDB push, GELF logging, and a structured audit event stream
+- **Native Observability** - Built-in Prometheus metrics, structured logging, audit events (no sidecars required)
+- **Direct Server Return** - Optional DR mode for high-throughput return paths
 
-## Built Monitoring-First
+## Why?
 
-LibraFlux was built “monitoring first”: structured logging, a metrics registry, and audit events were scaffolded early and used to guide the rest of the implementation. The project milestones and test checkpoints are tracked in `Docs/PROGRESS.md`.
+Existing L4 load balancers often require separate exporters for metrics or complex multi-tool setups for HA. LibraFlux treats observability as a first-class citizen and provides a single binary that integrates with your existing VRRP infrastructure.
+
+### Comparison with User-Space Proxies
+
+| Feature | Nginx/HAProxy | LibraFlux |
+|---------|---------------|-----------|
+| Architecture | User-space proxy | Kernel-space controller |
+| Data plane | All traffic proxied | IPVS in kernel |
+| Return path | Through load balancer | Optional DR (bypass LB) |
+| Observability | Requires exporters | Built-in Prometheus |
+| Configuration | Reload-based | Reconciliation loop |
+
+**Use LibraFlux when:** You need L4 load balancing for internal infrastructure with native metrics and declarative configuration.
+
+**Use Nginx/HAProxy when:** You need L7 features (SSL termination, URL routing, content manipulation).
+
+## Quick Start
 
 ## Quick Start
 
@@ -78,94 +57,90 @@ LibraFlux was built “monitoring first”: structured logging, a metrics regist
 # Build
 go build -o lbctl ./cmd/lbctl
 
-# Validate config
+# Validate configuration
 sudo ./lbctl validate --config /etc/lbctl/config.yaml
 
-# Apply once (one-shot reconciliation)
-sudo ./lbctl apply --config /etc/lbctl/config.yaml
-
-# Run daemon mode (monitor VIP + reconcile continuously)
+# Run daemon (VIP-aware reconciliation)
 sudo ./lbctl apply --daemon --config /etc/lbctl/config.yaml
 
-# Interactive shell (TTY: starts the shell by default)
+# Interactive shell
 sudo ./lbctl --config /etc/lbctl/config.yaml
 ```
 
-## Architecture
+See [Deployment/QUICK-START.md](Deployment/QUICK-START.md) for detailed setup instructions.
 
+## Configuration Example
+
+```yaml
+vip: "192.168.1.100"
+services:
+  - name: "postgres-cluster"
+    virtual_ip: "192.168.1.100"
+    virtual_port: 5432
+    protocol: "tcp"
+    scheduler: "rr"
+    backends:
+      - address: "192.168.1.101"
+        port: 5432
+        weight: 100
+      - address: "192.168.1.102"
+        port: 5432
+        weight: 100
+    health_check:
+      type: "tcp"
+      interval: "5s"
+      timeout: "2s"
+      retries: 3
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                       LibraFlux                             │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Config    │  │   Health    │  │    Reconciler       │  │
-│  │   Loader    │──│   Checker   │──│  (Desired→Actual)   │  │
-│  └─────────────┘  └─────────────┘  └──────────┬──────────┘  │
-│                                                │             │
-│  ┌─────────────────────────────────────────────▼──────────┐  │
-│  │                    IPVS Manager                        │  │
-│  │                  (netlink to kernel)                   │  │
-│  └────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Linux Kernel (IPVS)                      │
-└─────────────────────────────────────────────────────────────┘
-```
+
+## Observability
+
+Built-in Prometheus metrics at `/metrics`:
+
+- `lbctl_health_backend_healthy` - Backend health status
+- `lbctl_health_backend_weight` - Current backend weight
+- `lbctl_reconcile_runs_total` - Reconciliation loop counter
+- `lbctl_reconcile_duration_ms` - Reconciliation latency
+- `lbctl_vip_is_owner` - VIP ownership status
+- `lbctl_vip_transitions_total` - VIP failover counter
+
+Optional integrations: InfluxDB push, GELF logging, structured audit events.
 
 ## Building
 
 ```bash
-# Download dependencies
-go mod download
-
 # Run tests
 go test ./...
 
-# Run tests in AlmaLinux container (recommended for IPVS/netlink)
-make docker-test
-
 # Build binary
 go build -o lbctl ./cmd/lbctl
+
+# Docker-based testing (recommended)
+make docker-test
 ```
 
-## Project Structure
+## Troubleshooting and Feedback
 
-```
-LibraFlux/
-├── cmd/lbctl/           # CLI entry point
-├── internal/
-│   ├── observability/   # Logging, metrics, audit
-│   ├── config/          # Configuration management
-│   ├── ipvs/            # IPVS management & reconciler
-│   ├── health/          # Health checking scheduler
-│   ├── system/          # System integration (sysctl, FRR)
-│   ├── shell/           # Interactive network-device-style shell
-│   └── daemon/          # Main control loop engine
-├── dist/                # Distribution files (systemd, examples)
-├── Docs/                # Specification and standards
-├── go.mod
-└── README.md
-```
+Please raise issues on the [GitHub repository](https://github.com/yourusername/LibraFlux/issues) and check the documentation in the [Deployment](Deployment/) directory.
 
-## CLI Command
-
-LibraFlux ships as a single binary named `lbctl` (load balancer control):
+Run diagnostics:
 
 ```bash
-lbctl apply [--daemon]     # Apply config (one-shot or run daemon)
-lbctl validate             # Validate config only
-lbctl status               # Print node/VIP/config summary
-lbctl show <topic>         # show status|config
-lbctl disable              # Remove managed IPVS services for VIP
-lbctl doctor               # Run diagnostic checks
+sudo ./lbctl doctor
 ```
 
-## Community Project
+## Contributing
 
-If you want this to be a shared learning project: open issues for “paper cuts”, add lab notes to `Docs/`, and contribute small PRs that improve correctness, observability, and test coverage. The spec and engineering standards are intentionally written to be readable and evolvable as the community learns.
+Thanks for taking the time to join our community and start contributing! We welcome pull requests. Feel free to dig through the [issues](https://github.com/yourusername/LibraFlux/issues) and jump in.
 
 ## License
 
 Apache 2.0
+
+---
+
+**Documentation:**
+- [Quick Start Guide](Deployment/QUICK-START.md)
+- [Deployment Guide](Deployment/README.md)
+- [Engineering Standards](Docs/engineering-standards.md)
+- [Project Progress](Docs/PROGRESS.md)

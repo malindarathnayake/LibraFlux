@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  GO_VERSION: "1.23.0"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: lbctl-test
+          load: true
+          tags: lbctl-test:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run tests in container
+        run: |
+          docker run --rm lbctl-test:ci go test -v ./...
+
+  build:
+    name: Build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build binary
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: lbctl-build
+          load: true
+          tags: lbctl-build:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract binary
+        run: |
+          id=$(docker create lbctl-build:ci)
+          docker cp "$id:/out/lbctl" ./lbctl
+          docker rm -f "$id"
+          chmod +x ./lbctl
+          ./lbctl --help
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: lbctl-linux-amd64
+          path: lbctl
+          retention-days: 7
+
+  deploy-script-test:
+    name: Test Deploy Script
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build deploy test image
+        run: |
+          docker build -f scripts/Dockerfile.deploy-test -t lbctl-deploy-test .
+
+      - name: Run deploy script (dry-run)
+        run: |
+          docker run --rm lbctl-deploy-test /scripts/deploy.sh --dry-run
+
+      - name: Run deploy script (full install)
+        run: |
+          docker run --privileged --rm lbctl-deploy-test /scripts/deploy.sh --skip-frr-start
+

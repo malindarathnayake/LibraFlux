@@ -3,10 +3,12 @@ SHELL := /bin/bash
 BIN ?= lbctl
 OUT_DIR ?= bin
 
-.PHONY: build test clean docker-test docker-build docker-run docker-artifact
+.PHONY: build test clean docker-test docker-build docker-run docker-artifact \
+        deploy-test deploy-test-dry deploy-test-full
 IMAGE_TEST ?= lbctl-test
 IMAGE_BUILD ?= lbctl-build
 IMAGE_RUN ?= lbctl-alma
+IMAGE_DEPLOY_TEST ?= lbctl-deploy-test
 DOCKER_ARGS ?= --help
 
 build:
@@ -36,3 +38,17 @@ docker-artifact:
 		docker rm -f "$$id" >/dev/null; \
 		chmod +x "./$(BIN)"; \
 		echo "Wrote ./$(BIN)"
+
+# Deploy script testing (local Docker)
+deploy-test-build:
+	docker build -f scripts/Dockerfile.deploy-test -t "$(IMAGE_DEPLOY_TEST)" .
+
+deploy-test-dry: deploy-test-build
+	docker run --rm "$(IMAGE_DEPLOY_TEST)" /scripts/deploy.sh --dry-run
+
+deploy-test-full: deploy-test-build
+	docker run --privileged --rm "$(IMAGE_DEPLOY_TEST)" /scripts/deploy.sh --skip-frr-start
+
+deploy-test: deploy-test-dry
+	@echo ""
+	@echo "Dry-run passed. Run 'make deploy-test-full' for full install test."
