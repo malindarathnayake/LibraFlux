@@ -149,13 +149,6 @@ LibraFlux/
 └── README.md
 ```
 
-## Documentation
-
-- [spec.md](Docs/spec.md) - Complete project specification
-- [engineering-standards.md](Docs/engineering-standards.md) - Implementation patterns
-- [PROGRESS.md](Docs/PROGRESS.md) - Implementation progress tracker
-- [testing-harness.md](Docs/testing-harness.md) - Docker-based functional harness and DR/NAT testing notes
-
 ## CLI Command
 
 LibraFlux ships as a single binary named `lbctl` (load balancer control):
